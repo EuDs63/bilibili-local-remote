@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "B站床上遥控器",
+  "version": "0.2.3",
+  "description": "让安卓手机通过局域网遥控 Edge/Chrome 上的哔哩哔哩播放器。",
+  "permissions": ["tabs", "windows", "alarms", "debugger"],
+  "host_permissions": [
+    "http://127.0.0.1:7331/*",
+    "https://bilibili.com/*",
+    "https://*.bilibili.com/*",
+    "https://b23.tv/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://bilibili.com/*", "https://*.bilibili.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "B站床上遥控器",
+    "default_popup": "popup.html"
+  }
+}

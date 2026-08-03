@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#090c12" />
+    <title>B站床上遥控器</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section id="pair-view" class="pair-view" aria-labelledby="pair-title">
+        <div class="brand-mark" aria-hidden="true">B</div>
+        <p class="eyebrow">仅在家中局域网运行</p>
+        <h1 id="pair-title">连接床尾的电脑</h1>
+        <p class="muted">在电脑黑色窗口中找到六位配对码，输入一次即可。</p>
+        <form id="pair-form" class="pair-form" novalidate>
+          <label for="pair-code">六位配对码</label>
+          <input id="pair-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="000000" required />
+          <button id="pair-submit" class="primary" type="submit">连接遥控器</button>
+        </form>
+        <p id="pair-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="remote-view" class="remote-view" hidden>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">BILIBILI · BED REMOTE</p>
+            <h1>床上遥控器</h1>
+          </div>
+          <div id="connection" class="connection" data-state="waiting">
+            <span class="connection-dot"></span>
+            <span id="connection-text">正在连接</span>
+          </div>
+        </header>
+
+        <section class="now-playing" aria-live="polite">
+          <p class="section-label">正在播放</p>
+          <h2 id="video-title">等待电脑上的 B 站视频…</h2>
+          <input id="progress" class="progress" type="range" min="0" max="100" value="0" step="0.1" aria-label="播放进度" />
+          <div class="time-row"><span id="current-time">0:00</span><span id="duration">0:00</span></div>
+        </section>
+
+        <section class="transport" aria-label="播放控制">
+          <button class="round secondary" data-command="previous" aria-label="上一集"><span>上一集</span></button>
+          <button class="round secondary" data-command="seekBy" data-value="-10" aria-label="快退十秒"><strong>−10</strong><span>秒</span></button>
+          <button id="play-toggle" class="round play" data-command="toggle" aria-label="播放或暂停"><span id="play-icon">▶</span></button>
+          <button class="round secondary" data-command="seekBy" data-value="10" aria-label="快进十秒"><strong>+10</strong><span>秒</span></button>
+          <button class="round secondary" data-command="next" aria-label="下一集"><span>下一集</span></button>
+        </section>
+
+        <section class="panel volume-panel">
+          <button class="icon-button" data-command="mute" aria-label="静音">音量</button>
+          <input id="volume" type="range" min="0" max="1" value="0.7" step="0.02" aria-label="音量" />
+          <output id="volume-value">70%</output>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading"><span>播放速度</span><strong id="speed-value">1×</strong></div>
+          <div class="speed-grid" role="group" aria-label="播放速度">
+            <button data-command="speed" data-value="0.5">0.5×</button>
+            <button data-command="speed" data-value="0.75">0.75×</button>
+            <button data-command="speed" data-value="1" class="active">1×</button>
+            <button data-command="speed" data-value="1.25">1.25×</button>
+            <button data-command="speed" data-value="1.5">1.5×</button>
+            <button data-command="speed" data-value="2">2×</button>
+          </div>
+        </section>
+
+        <section class="utility-grid" aria-label="播放器功能">
+          <button data-command="toggleDanmaku"><span class="utility-icon">弹</span><span>开关弹幕</span></button>
+          <button data-command="webFullscreen"><span class="utility-icon">全</span><span>播放器全屏</span></button>
+        </section>
+
+        <section class="open-video panel">
+          <div class="panel-heading"><span>在电脑上打开视频</span></div>
+          <form id="url-form">
+            <input id="video-url" type="text" inputmode="url" placeholder="粘贴链接或完整分享文案" required />
+            <button type="submit">打开</button>
+          </form>
+        </section>
+
+        <footer>
+          <p id="hint">电脑需保持本地服务和 B 站页面开启</p>
+          <button id="forget" class="text-button" type="button">忘记这台电脑</button>
+        </footer>
+      </section>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

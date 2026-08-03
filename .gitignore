@@ -1,0 +1,20 @@
+.data/
+.npm-cache/
+node_modules/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local databases and OS metadata
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+Thumbs.db
