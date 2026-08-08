@@ -1,9 +1,9 @@
 {
-  "name": "bilibili-local-remote",
-  "version": "0.2.0",
+  "name": "web-video-local-remote",
+  "version": "0.3.6",
   "private": true,
   "type": "module",
-  "description": "局域网内用安卓手机遥控 Edge/Chrome 上的哔哩哔哩播放器",
+  "description": "局域网内用手机遥控 Edge/Chrome 中的网页视频播放器",
   "scripts": {
     "start": "node server.mjs",
     "start:no-pairing": "node server.mjs --no-pairing",

@@ -9,6 +9,8 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_ROOT = join(ROOT, "public");
 const DEFAULT_DATA_DIR = join(ROOT, ".data");
 const MAX_BODY_BYTES = 64 * 1024;
+const EXTENSION_TIMEOUT_MS = 45_000;
+const VERSION = "0.3.6";
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -30,6 +32,7 @@ const SIMPLE_COMMANDS = new Set([
   "toggleDanmaku",
   "fullscreen",
   "webFullscreen",
+  "closeTab",
 ]);
 
 function loadOrCreateToken(dataDir) {
@@ -74,7 +77,7 @@ function tokensMatch(received, expected) {
 }
 
 function readToken(req) {
-  const header = req.headers["x-bili-remote-token"];
+  const header = req.headers["x-video-remote-token"] || req.headers["x-bili-remote-token"];
   return Array.isArray(header) ? header[0] : header;
 }
 
@@ -90,19 +93,32 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-export function extractBilibiliUrl(value) {
+export function extractVideoUrl(value) {
   const text = String(value || "");
-  const match = text.match(/https?:\/\/(?:[a-z0-9-]+\.)*bilibili\.com\/[^\s<>"'，。！？；：、）】》]+|https?:\/\/b23\.tv\/[^\s<>"'，。！？；：、）】》]+/i);
+  const match = text.match(/https?:\/\/[^\s<>"'，。！？；：、）】》]+/i);
   if (!match) return null;
   try {
-    const url = new URL(match[0]);
+    const candidate = match[0].replace(/[),.!?;:，。！？；：、）】》]+$/u, "");
+    const url = new URL(candidate);
     if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-    const host = url.hostname.toLowerCase();
-    if (host !== "bilibili.com" && !host.endsWith(".bilibili.com") && host !== "b23.tv") return null;
+    if (!url.hostname || url.username || url.password) return null;
     return url.href;
   } catch {
     return null;
   }
+}
+
+// Kept as an export so integrations written for version 0.2 do not break.
+export const extractBilibiliUrl = extractVideoUrl;
+
+function normalizeCapabilities(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    danmaku: Boolean(source.danmaku),
+    fullscreen: source.fullscreen !== false,
+    next: Boolean(source.next),
+    previous: Boolean(source.previous),
+  };
 }
 
 function normalizeCommand(body) {
@@ -126,7 +142,7 @@ function normalizeCommand(body) {
     if ([0.5, 0.75, 1, 1.25, 1.5, 2].includes(value)) return { type, value };
   }
   if (type === "openUrl") {
-    const value = extractBilibiliUrl(body.value);
+    const value = extractVideoUrl(body.value);
     if (value) return { type, value };
   }
   return null;
@@ -158,9 +174,12 @@ export function lanAddresses() {
 
 export async function startServer({
   host = "0.0.0.0",
-  port = Number(process.env.BILI_REMOTE_PORT || 7331),
+  port = Number(process.env.VIDEO_REMOTE_PORT || process.env.BILI_REMOTE_PORT || 17331),
   dataDir = DEFAULT_DATA_DIR,
-  noPairing = process.env.BILI_REMOTE_NO_PAIRING === "1" || process.argv.includes("--no-pairing"),
+  noPairing = process.env.VIDEO_REMOTE_NO_PAIRING === "1"
+    || process.env.BILI_REMOTE_NO_PAIRING === "1"
+    || process.argv.includes("--no-pairing"),
+  logger = console,
 } = {}) {
   const token = loadOrCreateToken(dataDir);
   const pairingCode = String(randomInt(0, 1_000_000)).padStart(6, "0");
@@ -168,19 +187,58 @@ export async function startServer({
   let sequence = 0;
   let latestState = null;
   let extensionLastSeen = 0;
+  let extensionOnline = false;
+  let acknowledgedSeq = 0;
+  let lastPlayerUrl = "";
   const commandHistory = [];
   const waiters = new Set();
   const failedPairing = new Map();
+  const phoneClients = new Set();
+
+  function log(level, area, message) {
+    const method = level === "错误" ? "error" : level === "警告" ? "warn" : "log";
+    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    logger?.[method]?.(`[${time}] [${area}] ${message}`);
+  }
+
+  function extensionIsConnected(now = Date.now()) {
+    const connected = now - extensionLastSeen < EXTENSION_TIMEOUT_MS;
+    if (!connected && extensionOnline) {
+      extensionOnline = false;
+      log("警告", "扩展", "连接已超时；请检查扩展是否重新加载、浏览器是否正在运行");
+    }
+    return connected;
+  }
+
+  function markExtensionSeen() {
+    const wasConnected = extensionIsConnected();
+    extensionLastSeen = Date.now();
+    if (!wasConnected) {
+      extensionOnline = true;
+      log("信息", "扩展", "已连接，正在监听遥控命令");
+    }
+  }
+
+  function commandDescription(command) {
+    if (command.type === "openUrl") return `打开链接 ${command.value}`;
+    if (command.value !== undefined) return `${command.type} (${command.value})`;
+    return command.type;
+  }
+
+  function logDelivery(commands) {
+    if (!commands.length) return;
+    log("信息", "命令", `已发送到扩展：${commands.map((command) => `#${command.seq}`).join(", ")}`);
+  }
 
   function publicState() {
     const now = Date.now();
     return {
-      extensionConnected: now - extensionLastSeen < 25_000,
+      extensionConnected: extensionIsConnected(now),
       playerActive: Boolean(latestState && now - latestState.updatedAt < 5000),
       player: latestState,
       pairingRequired: !noPairing,
       serverTime: now,
-      version: "0.2.0",
+      version: VERSION,
     };
   }
 
@@ -194,6 +252,7 @@ export async function startServer({
       if (commands.length) {
         clearTimeout(waiter.timer);
         waiters.delete(waiter);
+        logDelivery(commands);
         json(waiter.res, 200, { bootId, commands, latestSeq: sequence });
       }
     }
@@ -203,6 +262,7 @@ export async function startServer({
     const item = { ...command, seq: ++sequence, sentAt: Date.now() };
     commandHistory.push(item);
     if (commandHistory.length > 100) commandHistory.shift();
+    log("信息", "命令", `#${item.seq} 已入队：${commandDescription(item)}`);
     flushWaiters();
     return item;
   }
@@ -223,7 +283,7 @@ export async function startServer({
   async function api(req, res, url) {
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
-        "Access-Control-Allow-Headers": "Content-Type, X-Bili-Remote-Token",
+        "Access-Control-Allow-Headers": "Content-Type, X-Video-Remote-Token, X-Bili-Remote-Token",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Origin": "*",
       });
@@ -232,7 +292,7 @@ export async function startServer({
     }
 
     if (url.pathname === "/api/info" && req.method === "GET") {
-      json(res, 200, { pairingRequired: !noPairing, version: "0.2.0" });
+      json(res, 200, { pairingRequired: !noPairing, version: VERSION });
       return true;
     }
 
@@ -254,6 +314,7 @@ export async function startServer({
           return true;
         }
         failedPairing.delete(ip);
+        log("信息", "手机", `设备 ${ip} 配对成功`);
         json(res, 200, { token });
       } catch {
         json(res, 400, { error: "无法读取配对请求" });
@@ -266,8 +327,8 @@ export async function startServer({
         json(res, 403, { error: "只允许本机扩展访问" });
         return true;
       }
-      extensionLastSeen = Date.now();
-      json(res, 200, { bootId, latestSeq: sequence });
+      markExtensionSeen();
+      json(res, 200, { acknowledgedSeq, bootId, latestSeq: sequence });
       return true;
     }
 
@@ -276,10 +337,11 @@ export async function startServer({
         json(res, 403, { error: "只允许本机扩展访问" });
         return true;
       }
-      extensionLastSeen = Date.now();
+      markExtensionSeen();
       const after = Math.max(0, Number(url.searchParams.get("after")) || 0);
       const commands = commandsAfter(after);
       if (commands.length) {
+        logDelivery(commands);
         json(res, 200, { bootId, commands, latestSeq: sequence });
         return true;
       }
@@ -289,10 +351,35 @@ export async function startServer({
         json(res, 200, { bootId, commands: [], latestSeq: sequence });
       }, 20_000);
       waiters.add(waiter);
-      req.on("close", () => {
+      res.on("close", () => {
         clearTimeout(waiter.timer);
         waiters.delete(waiter);
       });
+      return true;
+    }
+
+    if (url.pathname === "/api/extension/result" && req.method === "POST") {
+      if (!isLoopback(req.socket.remoteAddress)) {
+        json(res, 403, { error: "只允许本机扩展访问" });
+        return true;
+      }
+      try {
+        const body = await readJson(req);
+        const seq = Math.max(0, Math.trunc(Number(body.seq) || 0));
+        const item = commandHistory.find((command) => command.seq === seq);
+        if (!item) {
+          json(res, 400, { error: "命令序号不存在" });
+          return true;
+        }
+        const handled = body.handled === true;
+        const detail = String(body.detail || "").replace(/\s+/g, " ").slice(0, 240);
+        acknowledgedSeq = Math.max(acknowledgedSeq, seq);
+        markExtensionSeen();
+        log(handled ? "信息" : "警告", "命令", `#${seq} ${handled ? "执行成功" : "执行失败"}${detail ? `：${detail}` : ""}`);
+        json(res, 200, { ok: true });
+      } catch {
+        json(res, 400, { error: "无法读取命令执行结果" });
+      }
       return true;
     }
 
@@ -304,17 +391,24 @@ export async function startServer({
       try {
         const body = await readJson(req);
         latestState = {
-          title: String(body.title || "哔哩哔哩").slice(0, 200),
+          title: String(body.title || "网页视频").slice(0, 200),
+          siteName: String(body.siteName || "网页视频").slice(0, 80),
           currentTime: Math.max(0, Number(body.currentTime) || 0),
           duration: Math.max(0, Number(body.duration) || 0),
           volume: Math.min(1, Math.max(0, Number(body.volume) || 0)),
           muted: Boolean(body.muted),
           paused: Boolean(body.paused),
           playbackRate: Number(body.playbackRate) || 1,
-          url: extractBilibiliUrl(body.url) || "",
+          url: extractVideoUrl(body.url) || "",
+          capabilities: normalizeCapabilities(body.capabilities),
           updatedAt: Date.now(),
         };
-        extensionLastSeen = Date.now();
+        markExtensionSeen();
+        if (latestState.url && latestState.url !== lastPlayerUrl) {
+          lastPlayerUrl = latestState.url;
+          log("信息", "播放器", `${latestState.siteName} · ${latestState.title}`);
+          log("信息", "播放器", `页面 ${latestState.url}`);
+        }
         json(res, 200, { ok: true });
       } catch {
         json(res, 400, { error: "播放器状态格式不正确" });
@@ -328,11 +422,21 @@ export async function startServer({
     }
 
     if (url.pathname === "/api/state" && req.method === "GET") {
+      const ip = req.socket.remoteAddress || "unknown";
+      if (!isLoopback(ip) && !phoneClients.has(ip)) {
+        phoneClients.add(ip);
+        log("信息", "手机", `控制页面已连接：${ip}`);
+      }
       json(res, 200, publicState());
       return true;
     }
 
     if (url.pathname === "/api/command" && req.method === "POST") {
+      if (!extensionIsConnected()) {
+        log("警告", "命令", "已拒绝：扩展未连接，命令不会进入队列");
+        json(res, 409, { error: "扩展未连接，请重新加载扩展并刷新视频页面后再试" });
+        return true;
+      }
       try {
         const body = await readJson(req);
         const command = normalizeCommand(body);
@@ -387,7 +491,7 @@ export async function startServer({
         serveStatic(req, res, url);
       }
     } catch (error) {
-      console.error(error);
+      log("错误", "服务", error?.stack || error?.message || String(error));
       if (!res.headersSent) json(res, 500, { error: "本地服务发生错误" });
       else res.end();
     }
@@ -397,6 +501,7 @@ export async function startServer({
     server.once("error", reject);
     server.listen(port, host, resolveListen);
   });
+  log("信息", "服务", `正在监听 ${host}:${server.address().port}，版本 ${VERSION}`);
 
   return {
     bootId,
@@ -413,7 +518,7 @@ if (entry === import.meta.url) {
   const running = await startServer();
   const addresses = lanAddresses();
   const primaryUrl = addresses.length ? `http://${addresses[0]}:${running.port}/` : null;
-  console.log("\n  B站床上遥控器已经启动");
+  console.log("\n  网页视频床上遥控器已经启动");
   if (running.noPairing) {
     console.log("  模式：免配对（同一局域网内的设备均可控制）");
   } else {
@@ -437,5 +542,6 @@ if (entry === import.meta.url) {
       console.warn(`\n  二维码生成失败：${error.message}`);
     }
   }
-  console.log("\n  请保持这个窗口打开。按 Ctrl+C 可以停止。\n");
+  console.log("\n  请保持这个窗口打开。按 Ctrl+C 可以停止。");
+  console.log("  发送链接后，日志应依次显示：已入队 → 已发送到扩展 → 执行成功。\n");
 }

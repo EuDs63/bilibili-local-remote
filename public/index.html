@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#090c12" />
-    <title>B站床上遥控器</title>
+    <title>网页视频床上遥控器</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
       <section id="pair-view" class="pair-view" aria-labelledby="pair-title">
-        <div class="brand-mark" aria-hidden="true">B</div>
+        <div class="brand-mark" aria-hidden="true">▶</div>
         <p class="eyebrow">仅在家中局域网运行</p>
         <h1 id="pair-title">连接床尾的电脑</h1>
         <p class="muted">在电脑黑色窗口中找到六位配对码，输入一次即可。</p>
@@ -25,7 +25,7 @@
       <section id="remote-view" class="remote-view" hidden>
         <header class="topbar">
           <div>
-            <p class="eyebrow">BILIBILI · BED REMOTE</p>
+            <p class="eyebrow">WEB VIDEO · BED REMOTE</p>
             <h1>床上遥控器</h1>
           </div>
           <div id="connection" class="connection" data-state="waiting">
@@ -35,18 +35,18 @@
         </header>
 
         <section class="now-playing" aria-live="polite">
-          <p class="section-label">正在播放</p>
-          <h2 id="video-title">等待电脑上的 B 站视频…</h2>
+          <p id="site-name" class="section-label">正在播放</p>
+          <h2 id="video-title">等待电脑上的网页视频…</h2>
           <input id="progress" class="progress" type="range" min="0" max="100" value="0" step="0.1" aria-label="播放进度" />
           <div class="time-row"><span id="current-time">0:00</span><span id="duration">0:00</span></div>
         </section>
 
         <section class="transport" aria-label="播放控制">
-          <button class="round secondary" data-command="previous" aria-label="上一集"><span>上一集</span></button>
+          <button id="previous-action" class="round secondary" data-command="seekBy" data-value="-60" aria-label="快退一分钟"><span>−1 min</span></button>
           <button class="round secondary" data-command="seekBy" data-value="-10" aria-label="快退十秒"><strong>−10</strong><span>秒</span></button>
           <button id="play-toggle" class="round play" data-command="toggle" aria-label="播放或暂停"><span id="play-icon">▶</span></button>
           <button class="round secondary" data-command="seekBy" data-value="10" aria-label="快进十秒"><strong>+10</strong><span>秒</span></button>
-          <button class="round secondary" data-command="next" aria-label="下一集"><span>下一集</span></button>
+          <button id="next-action" class="round secondary" data-command="seekBy" data-value="60" aria-label="快进一分钟"><span>+1 min</span></button>
         </section>
 
         <section class="panel volume-panel">
@@ -68,8 +68,9 @@
         </section>
 
         <section class="utility-grid" aria-label="播放器功能">
-          <button data-command="toggleDanmaku"><span class="utility-icon">弹</span><span>开关弹幕</span></button>
-          <button data-command="webFullscreen"><span class="utility-icon">全</span><span>播放器全屏</span></button>
+          <button data-command="toggleDanmaku" data-capability="danmaku"><span class="utility-icon">弹</span><span>开关弹幕</span></button>
+          <button data-command="webFullscreen" data-capability="fullscreen"><span class="utility-icon">全</span><span>播放器全屏</span></button>
+          <button class="close-tab" data-command="closeTab"><span class="utility-icon">关</span><span>关闭页面</span></button>
         </section>
 
         <section class="open-video panel">
@@ -81,7 +82,7 @@
         </section>
 
         <footer>
-          <p id="hint">电脑需保持本地服务和 B 站页面开启</p>
+          <p id="hint">电脑需保持本地服务和视频页面开启</p>
           <button id="forget" class="text-button" type="button">忘记这台电脑</button>
         </footer>
       </section>
