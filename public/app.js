@@ -11,7 +11,9 @@ const progress = $("#progress");
 const volume = $("#volume");
 const toast = $("#toast");
 
-let token = localStorage.getItem("biliRemoteToken") || "";
+const LEGACY_TOKEN_KEY = "biliRemoteToken";
+const TOKEN_KEY = "videoRemoteToken";
+let token = localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || "";
 let pairingRequired = true;
 let latestPlayer = null;
 let draggingProgress = false;
@@ -34,11 +36,11 @@ function showPair() {
   pairCode.focus();
 }
 
-function notify(message) {
+function notify(message, duration = 1800) {
   clearTimeout(toastTimer);
   toast.textContent = message;
   toast.classList.add("show");
-  toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), duration);
 }
 
 function vibrate() {
@@ -47,7 +49,7 @@ function vibrate() {
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (token) headers["X-Bili-Remote-Token"] = token;
+  if (token) headers["X-Video-Remote-Token"] = token;
   if (options.body) headers["Content-Type"] = "application/json";
   const response = await fetch(path, { ...options, headers, cache: "no-store" });
   const body = await response.json().catch(() => ({}));
@@ -62,9 +64,17 @@ function normalizePairCode(value) {
     .slice(0, 6);
 }
 
-function extractBilibiliUrl(value) {
-  const match = String(value || "").match(/https?:\/\/(?:[a-z0-9-]+\.)*bilibili\.com\/[^\s<>"'，。！？；：、）】》]+|https?:\/\/b23\.tv\/[^\s<>"'，。！？；：、）】》]+/i);
-  return match ? match[0] : "";
+function extractVideoUrl(value) {
+  const match = String(value || "").match(/https?:\/\/[^\s<>"'，。！？；：、）】》]+/i);
+  if (!match) return "";
+  const candidate = match[0].replace(/[),.!?;:，。！？；：、）】》]+$/u, "");
+  try {
+    const url = new URL(candidate);
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) return "";
+    return url.href;
+  } catch {
+    return "";
+  }
 }
 
 async function sendCommand(type, value) {
@@ -76,7 +86,7 @@ async function sendCommand(type, value) {
     });
     return true;
   } catch (error) {
-    notify(error.message);
+    notify(error.message, 3600);
     return false;
   }
 }
@@ -90,6 +100,21 @@ function formatTime(seconds) {
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${secs}` : `${minutes}:${secs}`;
 }
 
+function configureEpisodeAction(button, supported, direction) {
+  const isNext = direction > 0;
+  if (supported) {
+    button.dataset.command = isNext ? "next" : "previous";
+    delete button.dataset.value;
+    button.querySelector("span").textContent = isNext ? "下一集" : "上一集";
+    button.setAttribute("aria-label", isNext ? "下一集" : "上一集");
+    return;
+  }
+  button.dataset.command = "seekBy";
+  button.dataset.value = String(direction * 60);
+  button.querySelector("span").textContent = isNext ? "+1 min" : "−1 min";
+  button.setAttribute("aria-label", isNext ? "快进一分钟" : "快退一分钟");
+}
+
 function renderState(state) {
   const online = state.extensionConnected && state.playerActive;
   connection.dataset.state = online ? "online" : state.extensionConnected ? "waiting" : "offline";
@@ -97,12 +122,13 @@ function renderState(state) {
   $("#hint").textContent = online
     ? "手机和电脑正在通过家中网络连接"
     : state.extensionConnected
-      ? "扩展已连接，请在 Edge 中打开 B 站视频"
+      ? "扩展已连接，请在 Edge 中打开一个网页视频"
       : "请确认 Edge 扩展已加载，并保持本地服务开启";
   if (!state.player) return;
 
   latestPlayer = state.player;
-  $("#video-title").textContent = state.player.title || "哔哩哔哩";
+  $("#site-name").textContent = state.player.siteName || "网页视频";
+  $("#video-title").textContent = state.player.title || "网页视频";
   $("#current-time").textContent = formatTime(state.player.currentTime);
   $("#duration").textContent = formatTime(state.player.duration);
   if (!draggingProgress) {
@@ -117,6 +143,15 @@ function renderState(state) {
   document.querySelectorAll(".speed-grid button").forEach((button) => {
     button.classList.toggle("active", Number(button.dataset.value) === state.player.playbackRate);
   });
+  const capabilities = state.player.capabilities || {};
+  configureEpisodeAction($("#previous-action"), Boolean(capabilities.previous), -1);
+  configureEpisodeAction($("#next-action"), Boolean(capabilities.next), 1);
+  document.querySelectorAll("[data-capability]").forEach((button) => {
+    const supported = capabilities[button.dataset.capability] !== false
+      && (button.dataset.capability === "fullscreen" || Boolean(capabilities[button.dataset.capability]));
+    button.disabled = !supported;
+    button.title = supported ? "" : "当前网站未提供此功能";
+  });
 }
 
 async function refresh() {
@@ -129,7 +164,8 @@ async function refresh() {
     connectionText.textContent = "服务未连接";
     if (error.message.includes("配对")) {
       token = "";
-      localStorage.removeItem("biliRemoteToken");
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(LEGACY_TOKEN_KEY);
       showPair();
     }
   }
@@ -154,7 +190,8 @@ pairForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({ code }),
     });
     token = result.token;
-    localStorage.setItem("biliRemoteToken", token);
+    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     showRemote();
     refresh();
   } catch (error) {
@@ -197,22 +234,23 @@ volume.addEventListener("change", () => sendCommand("volume", Number(volume.valu
 $("#url-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $("#video-url");
-  const url = extractBilibiliUrl(input.value);
+  const url = extractVideoUrl(input.value);
   if (!url) {
-    notify("没有找到有效的 B 站链接");
+    notify("没有找到有效的网页链接");
     input.focus();
     return;
   }
   const sent = await sendCommand("openUrl", url);
   if (!sent) return;
   input.value = "";
-  notify("已发送到电脑");
+  notify("命令已入队，等待扩展打开");
 });
 
 $("#forget").addEventListener("click", () => {
   if (!pairingRequired) return;
   token = "";
-  localStorage.removeItem("biliRemoteToken");
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
   showPair();
 });
 
