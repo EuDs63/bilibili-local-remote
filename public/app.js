@@ -10,6 +10,12 @@ const connectionText = $("#connection-text");
 const progress = $("#progress");
 const volume = $("#volume");
 const toast = $("#toast");
+const themeToggle = $("#theme-toggle");
+const themeController = RemoteFeatures.createThemeController({
+  storage: localStorage,
+  root: document.documentElement,
+  meta: document.querySelector('meta[name="theme-color"]'),
+});
 const LEGACY_TOKEN_KEY = "biliRemoteToken";
 const TOKEN_KEY = "videoRemoteToken";
 const REQUEST_TIMEOUT_MS = 5000;
@@ -34,6 +40,18 @@ let tabsSignature = "";
 let episodesSignature = "";
 const tabGroupExpanded = new Map();
 const pendingCloseTabIds = new Set();
+
+function renderThemeToggle() {
+  const dark = themeController.theme === "dark";
+  themeToggle.setAttribute("aria-pressed", String(dark));
+  themeToggle.setAttribute("aria-label", dark ? "切换到日间模式" : "切换到夜间模式");
+  themeToggle.querySelector("span").textContent = dark ? "日间" : "夜间";
+}
+themeToggle.addEventListener("click", () => {
+  themeController.toggle();
+  renderThemeToggle();
+});
+renderThemeToggle();
 
 function setView(view) {
   const remote = view === "remote";

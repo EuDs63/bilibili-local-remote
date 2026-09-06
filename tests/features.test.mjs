@@ -64,3 +64,45 @@ test("tab tree preserves windows, native order, group zero, and ungrouped runs",
   )).flat(2);
   assert.deepEqual(ids, [1, 2, 3, 5, 4]);
 });
+
+function themeHarness(storage) {
+  const root = { dataset: {}, style: {} };
+  const meta = { content: "" };
+  const controller = features.createThemeController({ storage, root, meta });
+  return { controller, root, meta };
+}
+
+test("theme defaults to light and persists explicit toggles", () => {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.get(key) || null; },
+    setItem(key, value) { values.set(key, value); },
+  };
+  const first = themeHarness(storage);
+  assert.equal(first.controller.theme, "light");
+  assert.equal(first.controller.toggle(), "dark");
+  assert.equal(values.get("videoRemoteTheme"), "dark");
+  const restored = themeHarness(storage);
+  assert.equal(restored.controller.theme, "dark");
+  assert.equal(restored.meta.content, "#141618");
+});
+
+test("invalid saved theme safely falls back to the light theme", () => {
+  const result = themeHarness({
+    getItem() { return "purple"; },
+    setItem() {},
+  });
+  assert.equal(result.controller.theme, "light");
+  assert.equal(result.root.style.colorScheme, "light");
+  assert.equal(result.meta.content, "#e7e9ec");
+});
+
+test("theme remains usable when storage access fails", () => {
+  const result = themeHarness({
+    getItem() { throw new Error("blocked"); },
+    setItem() { throw new Error("blocked"); },
+  });
+  assert.equal(result.controller.theme, "light");
+  assert.doesNotThrow(() => result.controller.toggle());
+  assert.equal(result.controller.theme, "dark");
+});

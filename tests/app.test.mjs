@@ -32,6 +32,7 @@ function loadApp(fetchImpl, { runDelays = false } = {}) {
   const commandButtons = [];
   const document = {
     hidden: false,
+    documentElement: { dataset: {}, style: {} },
     body: element(),
     createElement() { return element(); },
     querySelector: get,
@@ -52,6 +53,10 @@ function loadApp(fetchImpl, { runDelays = false } = {}) {
       bookmarkFromPlayer() { return null; },
       buildTabTree(tabs) {
         return [{ windowId: 1, entries: [{ key: "ungrouped", group: null, tabs }] }];
+      },
+      createThemeController({ root }) {
+        root.dataset.theme = "light";
+        return { theme: "light", toggle() { this.theme = "dark"; return this.theme; } };
       },
     },
     localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },

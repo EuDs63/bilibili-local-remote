@@ -70,5 +70,37 @@
     return [...windows.values()];
   }
 
-  root.RemoteFeatures = { extractUrls, moveItem, bookmarkFromPlayer, buildTabTree };
+  function createThemeController({ storage, root, meta }) {
+    const key = "videoRemoteTheme";
+    let saved = null;
+    try {
+      const value = storage.getItem(key);
+      if (value === "light" || value === "dark") saved = value;
+    } catch {
+      saved = null;
+    }
+    const apply = (theme) => {
+      root.dataset.theme = theme;
+      root.style.colorScheme = theme;
+      if (meta) meta.content = theme === "dark" ? "#141618" : "#e7e9ec";
+      return theme;
+    };
+    apply(saved || "light");
+    return {
+      get theme() { return root.dataset.theme; },
+      get userSelected() { return saved !== null; },
+      toggle() {
+        saved = root.dataset.theme === "dark" ? "light" : "dark";
+        apply(saved);
+        try {
+          storage.setItem(key, saved);
+        } catch {
+          // The chosen theme still applies for this page session.
+        }
+        return saved;
+      },
+    };
+  }
+
+  root.RemoteFeatures = { extractUrls, moveItem, bookmarkFromPlayer, buildTabTree, createThemeController };
 })(globalThis);
