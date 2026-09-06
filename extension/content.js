@@ -45,9 +45,31 @@ const DANMAKU_SELECTORS = [
   ".bpx-player-ctrl-danmaku input",
 ];
 
+const EPISODE_SELECTORS = [
+  ".video-pod__item",
+  ".ep-item",
+  ".list-box li",
+  ".bpx-player-episode-card",
+  ".ytp-playlist-menu-item",
+  "ytd-playlist-panel-video-renderer",
+  "[data-episode-id]",
+];
+
+let cachedVideo = null;
+let cachedTitle = "网页视频";
+let cachedSiteName = "网页视频";
+let cachedCapabilities = { danmaku: false, fullscreen: true, next: false, previous: false };
+let cachedEpisodes = [];
+let episodeTargets = new Map();
+let episodesPageUrl = location.href;
+let nextEpisodeIdentity = 1;
+const episodeIdentities = new WeakMap();
+
 function videoElement() {
+  if (cachedVideo?.isConnected) return cachedVideo;
   const videos = [...document.querySelectorAll("video")];
-  return videos.sort((left, right) => videoScore(right) - videoScore(left))[0] || null;
+  cachedVideo = videos.sort((left, right) => videoScore(right) - videoScore(left))[0] || null;
+  return cachedVideo;
 }
 
 function videoScore(video) {
@@ -160,7 +182,103 @@ function navigateEpisode(direction) {
   return false;
 }
 
+function safeEpisodeUrl(element) {
+  const link = element.matches?.("a[href]") ? element : element.querySelector?.("a[href]");
+  if (!link) return null;
+  try {
+    const url = new URL(link.href, location.href);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function refreshEpisodes() {
+  const elements = [];
+  const seen = new Set();
+  const seenUrls = new Set();
+  for (const selector of EPISODE_SELECTORS) {
+    for (const element of document.querySelectorAll(selector)) {
+      const href = safeEpisodeUrl(element);
+      if (!seen.has(element) && (!href || !seenUrls.has(href))) {
+        seen.add(element);
+        if (href) seenUrls.add(href);
+        elements.push(element);
+      }
+      if (elements.length >= 200) break;
+    }
+    if (elements.length >= 200) break;
+  }
+  const targets = new Map();
+  cachedEpisodes = elements.map((element, index) => {
+    const href = safeEpisodeUrl(element);
+    const title = String(
+      element.getAttribute?.("title")
+      || element.getAttribute?.("aria-label")
+      || element.textContent
+      || `第 ${index + 1} 集`,
+    ).replace(/\s+/g, " ").trim().slice(0, 60);
+    const fingerprint = `${href || ""}\n${title}`;
+    let identity = episodeIdentities.get(element);
+    if (!identity || identity.fingerprint !== fingerprint) {
+      identity = { value: nextEpisodeIdentity, fingerprint };
+      nextEpisodeIdentity += 1;
+      episodeIdentities.set(element, identity);
+    }
+    const id = `e${identity.value}`;
+    targets.set(id, { element, fingerprint });
+    const current = Boolean(element.matches?.(
+      ".active, .cursor, .on, [aria-current='true'], [data-active='true']",
+    ));
+    return { id, title, current };
+  });
+  episodeTargets = targets;
+  episodesPageUrl = location.href;
+}
+
+function selectEpisode(value) {
+  if (!value || value.pageUrl !== episodesPageUrl || value.pageUrl !== location.href) {
+    return { handled: false, detail: "选集列表已过期，请刷新后重试" };
+  }
+  const target = episodeTargets.get(value.id);
+  const element = target?.element;
+  if (!element?.isConnected) return { handled: false, detail: "所选分集已不存在" };
+  const currentTitle = String(
+    element.getAttribute?.("title") || element.getAttribute?.("aria-label") || element.textContent || "",
+  ).replace(/\s+/g, " ").trim().slice(0, 60);
+  const currentFingerprint = `${safeEpisodeUrl(element) || ""}\n${currentTitle}`;
+  if (currentFingerprint !== target.fingerprint) {
+    return { handled: false, detail: "选集内容已变化，请刷新后重试" };
+  }
+  const clickable = element.matches?.("a, button, [role='button']")
+    ? element
+    : element.querySelector?.("a, button, [role='button']") || element;
+  if (!(clickable instanceof HTMLElement)) return { handled: false, detail: "所选分集不可点击" };
+  clickable.click();
+  return { handled: true };
+}
+
+function resumeAt(value) {
+  if (!value || typeof value.url !== "string" || !Number.isFinite(Number(value.time))) {
+    return { handled: false, detail: "恢复时间点参数无效" };
+  }
+  const intended = new URL(value.url, location.href);
+  const current = new URL(location.href);
+  intended.hash = "";
+  current.hash = "";
+  if (intended.href !== current.href) {
+    return { handled: false, detail: "仍在等待目标视频页面完成跳转" };
+  }
+  const video = videoElement();
+  if (!video || video.readyState < 1) return { handled: false, detail: "仍在等待视频元数据" };
+  const requested = Math.max(0, Number(value.time));
+  video.currentTime = Math.min(Number.isFinite(video.duration) ? video.duration : requested, requested);
+  return { handled: true };
+}
+
 async function execute(command) {
+  if (command.type === "selectEpisode") return selectEpisode(command.value);
+  if (command.type === "resumeAt") return resumeAt(command.value);
   const video = videoElement();
   if (!video && !["next", "previous", "fullscreen", "webFullscreen", "toggleDanmaku"].includes(command.type)) return false;
 
@@ -206,12 +324,10 @@ async function execute(command) {
 
 function reportState() {
   const video = videoElement();
-  if (!video) return;
-  chrome.runtime.sendMessage({
-    kind: "player-state",
-    state: {
-      title: cleanTitle(),
-      siteName: siteName(),
+  if (!video) return null;
+  const state = {
+      title: cachedTitle,
+      siteName: cachedSiteName,
       currentTime: video.currentTime,
       duration: Number.isFinite(video.duration) ? video.duration : 0,
       volume: video.volume,
@@ -219,23 +335,108 @@ function reportState() {
       paused: video.paused,
       playbackRate: video.playbackRate,
       url: location.href,
-      capabilities: {
-        danmaku: hasSelector(DANMAKU_SELECTORS),
-        fullscreen: true,
-        next: hasSelector(NEXT_SELECTORS) || hasEpisodeSibling(1),
-        previous: hasSelector(PREVIOUS_SELECTORS) || hasEpisodeSibling(-1),
-      },
-    },
+      capabilities: cachedCapabilities,
+      episodes: cachedEpisodes,
+      episodesPageUrl,
+    };
+  chrome.runtime.sendMessage({
+    kind: "player-state",
+    state,
   }).catch(() => {});
+  return state;
+}
+
+function capabilities() {
+  return {
+    danmaku: hasSelector(DANMAKU_SELECTORS),
+    fullscreen: true,
+    next: hasSelector(NEXT_SELECTORS) || hasEpisodeSibling(1),
+    previous: hasSelector(PREVIOUS_SELECTORS) || hasEpisodeSibling(-1),
+  };
+}
+
+function currentState() {
+  const video = videoElement();
+  if (!video) return null;
+  return {
+    title: cachedTitle, siteName: cachedSiteName, currentTime: video.currentTime,
+    duration: Number.isFinite(video.duration) ? video.duration : 0,
+    volume: video.volume, muted: video.muted, paused: video.paused,
+    playbackRate: video.playbackRate, url: location.href, capabilities: cachedCapabilities,
+    episodes: cachedEpisodes, episodesPageUrl,
+  };
+}
+
+let reportTimer = null;
+let scanTimer = null;
+let attachedVideo = null;
+let cachedSignature = "";
+const mediaEvents = ["play", "pause", "ended", "durationchange", "volumechange", "ratechange", "seeked", "loadedmetadata", "emptied"];
+
+function scheduleReport(delay = 120) {
+  if (reportTimer !== null) return;
+  reportTimer = setTimeout(() => { reportTimer = null; reportState(); }, delay);
+}
+
+function attachVideoEvents() {
+  const video = videoElement();
+  if (video === attachedVideo) return;
+  if (attachedVideo) for (const event of mediaEvents) attachedVideo.removeEventListener(event, onMediaEvent);
+  attachedVideo = video;
+  if (attachedVideo) for (const event of mediaEvents) attachedVideo.addEventListener(event, onMediaEvent, { passive: true });
+  scheduleReport(0);
+}
+
+function onMediaEvent() { scheduleReport(120); }
+
+function scanPage() {
+  cachedVideo = null;
+  attachVideoEvents();
+  if (!cachedVideo) {
+    cachedEpisodes = [];
+    episodeTargets = new Map();
+    chrome.runtime.sendMessage({ kind: "player-unavailable" }).catch(() => {});
+    return;
+  }
+  cachedTitle = cleanTitle();
+  cachedSiteName = siteName();
+  cachedCapabilities = capabilities();
+  refreshEpisodes();
+  const signature = [
+    location.href,
+    document.title,
+    Boolean(document.querySelector("video")),
+    hasSelector(NEXT_SELECTORS),
+    hasSelector(PREVIOUS_SELECTORS),
+    hasSelector(DANMAKU_SELECTORS),
+  ].join("\n");
+  if (signature !== cachedSignature) { cachedSignature = signature; scheduleReport(); }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.kind === "player-probe") {
+    sendResponse({ state: currentState() });
+    return;
+  }
   if (message?.kind !== "remote-command") return;
   execute(message.command)
-    .then((handled) => { reportState(); sendResponse({ handled }); })
+    .then((result) => {
+      reportState();
+      sendResponse(typeof result === "object" ? result : { handled: result });
+    })
     .catch(() => sendResponse({ handled: false }));
   return true;
 });
 
-reportState();
-setInterval(reportState, 1000);
+scanPage();
+// A short heartbeat keeps the server's five-second activity window alive for paused/background video.
+setInterval(reportState, 1800);
+// Discovery is intentionally much slower than the old full-DOM one-second scan.
+setInterval(scanPage, 5000);
+const observer = new MutationObserver(() => {
+  if (scanTimer !== null) return;
+  scanTimer = setTimeout(() => { scanTimer = null; scanPage(); }, 1200);
+});
+observer.observe(document.documentElement, { childList: true, subtree: true });
+window.addEventListener("popstate", () => scheduleReport(0));
+window.addEventListener("hashchange", () => scheduleReport(0));

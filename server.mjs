@@ -4,12 +4,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createLibrary } from "./library.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_ROOT = join(ROOT, "public");
 const DEFAULT_DATA_DIR = join(ROOT, ".data");
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_CATALOG_BODY_BYTES = 4 * 1024 * 1024;
 const EXTENSION_TIMEOUT_MS = 45_000;
+const CATALOG_TIMEOUT_MS = 10_000;
 const VERSION = "0.3.6";
 
 const MIME_TYPES = {
@@ -32,8 +35,8 @@ const SIMPLE_COMMANDS = new Set([
   "toggleDanmaku",
   "fullscreen",
   "webFullscreen",
-  "closeTab",
 ]);
+const TAB_GROUP_COLORS = new Set(["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"]);
 
 function loadOrCreateToken(dataDir) {
   mkdirSync(dataDir, { recursive: true });
@@ -81,12 +84,16 @@ function readToken(req) {
   return Array.isArray(header) ? header[0] : header;
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new Error("请求内容过大");
+    if (size > maxBytes) {
+      const error = new Error("请求内容过大");
+      error.statusCode = 413;
+      throw error;
+    }
     chunks.push(chunk);
   }
   if (chunks.length === 0) return {};
@@ -108,6 +115,24 @@ export function extractVideoUrl(value) {
   }
 }
 
+function displayUrl(value) {
+  return String(value || "").replace(/[\u0000-\u001f\u007f]/gu, "").trim();
+}
+
+function normalizeTabGroup(value) {
+  if (value === null || value === undefined || value === -1) return null;
+  const id = Number(value.id);
+  if (id === -1) return null;
+  const color = String(value.color || "");
+  if (!Number.isSafeInteger(id) || id < 0 || !TAB_GROUP_COLORS.has(color)) throw new Error("标签页分组格式不正确");
+  return {
+    id,
+    title: String(value.title || "未命名分组").replace(/\s+/g, " ").trim().slice(0, 120) || "未命名分组",
+    color,
+    collapsed: Boolean(value.collapsed),
+  };
+}
+
 // Kept as an export so integrations written for version 0.2 do not break.
 export const extractBilibiliUrl = extractVideoUrl;
 
@@ -123,6 +148,13 @@ function normalizeCapabilities(value) {
 
 function normalizeCommand(body) {
   const type = body?.type;
+  if (type === "closeTab") {
+    if (!Object.prototype.hasOwnProperty.call(body, "value")) return { type };
+    if (typeof body.value === "number" && Number.isSafeInteger(body.value) && body.value > 0) {
+      return { type, value: body.value };
+    }
+    return null;
+  }
   if (SIMPLE_COMMANDS.has(type)) return { type };
 
   if (type === "seekBy") {
@@ -143,7 +175,24 @@ function normalizeCommand(body) {
   }
   if (type === "openUrl") {
     const value = extractVideoUrl(body.value);
-    if (value) return { type, value };
+    const startTime = Number(body.startTime);
+    if (value && (body.startTime === undefined || (Number.isFinite(startTime) && startTime >= 0 && startTime <= 86400))) {
+      return body.startTime === undefined ? { type, value } : { type, value, startTime };
+    }
+  }
+  if (type === "selectTab") {
+    const value = Number(body.value);
+    if (Number.isSafeInteger(value) && value > 0) return { type, value };
+  }
+  if (type === "lockTab") {
+    if (body.value === null) return { type, value: null };
+    const value = Number(body.value);
+    if (Number.isSafeInteger(value) && value > 0) return { type, value };
+  }
+  if (type === "selectEpisode") {
+    const id = String(body.value?.id || "").trim().slice(0, 300);
+    const pageUrl = extractVideoUrl(body.value?.pageUrl);
+    if (id && pageUrl) return { type, value: { id, pageUrl } };
   }
   return null;
 }
@@ -180,8 +229,10 @@ export async function startServer({
     || process.env.BILI_REMOTE_NO_PAIRING === "1"
     || process.argv.includes("--no-pairing"),
   logger = console,
+  catalogTimeoutMs = CATALOG_TIMEOUT_MS,
 } = {}) {
   const token = loadOrCreateToken(dataDir);
+  const mediaLibrary = createLibrary(dataDir, logger);
   const pairingCode = String(randomInt(0, 1_000_000)).padStart(6, "0");
   const bootId = randomBytes(8).toString("hex");
   let sequence = 0;
@@ -190,7 +241,10 @@ export async function startServer({
   let extensionOnline = false;
   let acknowledgedSeq = 0;
   let lastPlayerUrl = "";
+  let latestCatalog = null;
+  let catalogLastFailure = null;
   const commandHistory = [];
+  const pendingQueuePlays = new Map();
   const waiters = new Set();
   const failedPairing = new Map();
   const phoneClients = new Set();
@@ -232,10 +286,28 @@ export async function startServer({
 
   function publicState() {
     const now = Date.now();
+    const catalog = latestCatalog && now - latestCatalog.updatedAt < catalogTimeoutMs ? latestCatalog : null;
+    const player = latestCatalog
+      ? (catalog && catalog.selectedTabId !== null && latestState?.tabId === catalog.selectedTabId ? latestState : null)
+      : latestState;
     return {
       extensionConnected: extensionIsConnected(now),
-      playerActive: Boolean(latestState && now - latestState.updatedAt < 5000),
-      player: latestState,
+      bootId,
+      playerActive: Boolean(player && now - player.updatedAt < 5000),
+      player,
+      tabs: catalog?.tabs || [],
+      totalTabCount: catalog?.totalTabCount || 0,
+      truncated: catalog?.truncated || false,
+      supportsCloseTabById: catalog?.supportsCloseTabById === true,
+      catalogStatus: {
+        status: catalogLastFailure ? "error" : catalog ? "ready" : latestCatalog ? "stale" : "never",
+        lastAcceptedAt: latestCatalog?.updatedAt || null,
+        lastFailureAt: catalogLastFailure?.at || null,
+        lastError: catalogLastFailure?.error || "",
+      },
+      selectedTabId: catalog?.selectedTabId ?? null,
+      lockedTabId: catalog?.lockedTabId ?? null,
+      episodes: catalog ? (player?.episodes || []) : [],
       pairingRequired: !noPairing,
       serverTime: now,
       version: VERSION,
@@ -261,10 +333,22 @@ export async function startServer({
   function enqueue(command) {
     const item = { ...command, seq: ++sequence, sentAt: Date.now() };
     commandHistory.push(item);
-    if (commandHistory.length > 100) commandHistory.shift();
+    if (commandHistory.length > 100) {
+      const evicted = commandHistory.shift();
+      pendingQueuePlays.delete(evicted.seq);
+    }
     log("信息", "命令", `#${item.seq} 已入队：${commandDescription(item)}`);
     flushWaiters();
     return item;
+  }
+
+  function commandResult(item) {
+    return {
+      seq: item.seq,
+      bootId,
+      status: item.result?.status || "pending",
+      detail: item.result?.detail || "",
+    };
   }
 
   function pairingAllowed(ip) {
@@ -365,6 +449,10 @@ export async function startServer({
       }
       try {
         const body = await readJson(req);
+        if (body.bootId !== undefined && body.bootId !== bootId) {
+          json(res, 409, { error: "服务已重新启动，请重新同步命令" });
+          return true;
+        }
         const seq = Math.max(0, Math.trunc(Number(body.seq) || 0));
         const item = commandHistory.find((command) => command.seq === seq);
         if (!item) {
@@ -373,6 +461,30 @@ export async function startServer({
         }
         const handled = body.handled === true;
         const detail = String(body.detail || "").replace(/\s+/g, " ").slice(0, 240);
+        const nextResult = { status: handled ? "succeeded" : "failed", detail };
+        if (item.result) {
+          if (item.result.status !== nextResult.status || item.result.detail !== nextResult.detail) {
+            json(res, 409, { error: "命令已有不同的执行结果" });
+            return true;
+          }
+          markExtensionSeen();
+          acknowledgedSeq = Math.max(acknowledgedSeq, seq);
+          json(res, 200, { ok: true, duplicate: true });
+          return true;
+        }
+        const queuedItemId = pendingQueuePlays.get(seq);
+        if (handled && queuedItemId) {
+          try {
+            mediaLibrary.remove("queue", queuedItemId);
+            pendingQueuePlays.delete(seq);
+          } catch (error) {
+            json(res, 500, { error: `命令成功，但无法更新队列：${error.message}` });
+            return true;
+          }
+        } else if (!handled && queuedItemId) {
+          pendingQueuePlays.delete(seq);
+        }
+        item.result = nextResult;
         acknowledgedSeq = Math.max(acknowledgedSeq, seq);
         markExtensionSeen();
         log(handled ? "信息" : "警告", "命令", `#${seq} ${handled ? "执行成功" : "执行失败"}${detail ? `：${detail}` : ""}`);
@@ -390,6 +502,12 @@ export async function startServer({
       }
       try {
         const body = await readJson(req);
+        const tabId = Number(body.tabId);
+        const episodes = Array.isArray(body.episodes) ? body.episodes.slice(0, 200).map((episode) => ({
+          id: String(episode?.id || "").trim().slice(0, 80),
+          title: String(episode?.title || "").replace(/\s+/g, " ").trim().slice(0, 120),
+          current: Boolean(episode?.current),
+        })).filter((episode) => episode.id && episode.title) : [];
         latestState = {
           title: String(body.title || "网页视频").slice(0, 200),
           siteName: String(body.siteName || "网页视频").slice(0, 80),
@@ -401,8 +519,15 @@ export async function startServer({
           playbackRate: Number(body.playbackRate) || 1,
           url: extractVideoUrl(body.url) || "",
           capabilities: normalizeCapabilities(body.capabilities),
+          tabId: Number.isSafeInteger(tabId) && tabId > 0 ? tabId : null,
+          incognito: Boolean(body.incognito),
+          episodes,
+          episodesPageUrl: extractVideoUrl(body.episodesPageUrl) || extractVideoUrl(body.url) || "",
           updatedAt: Date.now(),
         };
+        if (!latestState.incognito) {
+          mediaLibrary.recordHistory({ url: latestState.url, title: latestState.title, time: latestState.currentTime, paused: latestState.paused });
+        }
         markExtensionSeen();
         if (latestState.url && latestState.url !== lastPlayerUrl) {
           lastPlayerUrl = latestState.url;
@@ -416,7 +541,8 @@ export async function startServer({
       return true;
     }
 
-    if (!noPairing && !tokensMatch(readToken(req), token)) {
+    const isExtensionCatalogPost = url.pathname === "/api/extension/catalog" && req.method === "POST";
+    if (!noPairing && !isExtensionCatalogPost && !tokensMatch(readToken(req), token)) {
       json(res, 401, { error: "请先使用配对码连接" });
       return true;
     }
@@ -428,6 +554,126 @@ export async function startServer({
         log("信息", "手机", `控制页面已连接：${ip}`);
       }
       json(res, 200, publicState());
+      return true;
+    }
+
+    if (url.pathname === "/api/extension/catalog" && req.method === "POST") {
+      if (!isLoopback(req.socket.remoteAddress)) {
+        json(res, 403, { error: "只允许本机扩展访问" });
+        return true;
+      }
+      try {
+        const body = await readJson(req, MAX_CATALOG_BODY_BYTES);
+        if (!Array.isArray(body.tabs) || body.tabs.length > 5000) throw new Error("标签页目录格式不正确");
+        const tabs = body.tabs.map((tab, position) => {
+          const id = Number(tab?.id), url = displayUrl(tab?.url);
+          if (!Number.isSafeInteger(id) || id <= 0) throw new Error("标签页目录包含无效项目");
+          const legacy = tab.hasVideo === undefined;
+          const windowId = tab.windowId === undefined ? 0 : Number(tab.windowId);
+          const index = tab.index === undefined ? position : Number(tab.index);
+          if (!Number.isSafeInteger(windowId) || windowId < 0 || !Number.isSafeInteger(index) || index < 0) {
+            throw new Error("标签页窗口或位置格式不正确");
+          }
+          return {
+            id, windowId, index,
+            title: String(tab.title || "网页视频").replace(/\s+/g, " ").trim().slice(0, 200),
+            siteName: String(tab.siteName || "网页视频").replace(/\s+/g, " ").trim().slice(0, 80),
+            url, active: Boolean(tab.active), pinned: Boolean(tab.pinned), discarded: Boolean(tab.discarded),
+            hasVideo: legacy ? true : Boolean(tab.hasVideo), paused: Boolean(tab.paused), audible: Boolean(tab.audible),
+            incognito: Boolean(tab.incognito), group: normalizeTabGroup(tab.group),
+          };
+        });
+        const ids = new Set(tabs.map((tab) => tab.id));
+        if (ids.size !== tabs.length) throw new Error("标签页目录包含重复项目");
+        const videoIds = new Set(tabs.filter((tab) => tab.hasVideo).map((tab) => tab.id));
+        const selectedTabId = body.selectedTabId === null ? null : Number(body.selectedTabId);
+        const lockedTabId = body.lockedTabId === null ? null : Number(body.lockedTabId);
+        if ((selectedTabId !== null && !videoIds.has(selectedTabId)) || (lockedTabId !== null && !videoIds.has(lockedTabId))) {
+          throw new Error("选中或锁定的标签页不在目录中");
+        }
+        const totalTabCount = body.totalTabCount === undefined ? tabs.length : Number(body.totalTabCount);
+        const truncated = Boolean(body.truncated);
+        if (!Number.isSafeInteger(totalTabCount) || totalTabCount < tabs.length || totalTabCount > 1_000_000 || truncated !== (totalTabCount > tabs.length)) {
+          throw new Error("标签页总数或截断标记格式不正确");
+        }
+        latestCatalog = {
+          tabs, totalTabCount, truncated, selectedTabId, lockedTabId,
+          supportsCloseTabById: body.supportsCloseTabById === true,
+          updatedAt: Date.now(),
+        };
+        catalogLastFailure = null;
+        markExtensionSeen();
+        json(res, 200, { ok: true });
+      } catch (error) {
+        const message = String(error.message || "标签页目录格式不正确").slice(0, 200);
+        const failureAt = Date.now();
+        const shouldLog = !catalogLastFailure || catalogLastFailure.error !== message || failureAt - catalogLastFailure.at >= 30_000;
+        catalogLastFailure = { at: failureAt, error: message };
+        if (shouldLog) log("警告", "标签页", `目录上报被拒绝：${message}`);
+        json(res, error.statusCode || 400, { error: message });
+      }
+      return true;
+    }
+
+    if (url.pathname === "/api/command-result" && req.method === "GET") {
+      const requestedBootId = url.searchParams.get("bootId");
+      if (!requestedBootId || requestedBootId !== bootId) {
+        json(res, 409, { error: "服务已重新启动，无法确认这条命令的执行结果", bootId });
+        return true;
+      }
+      const rawSeq = url.searchParams.get("seq");
+      const seq = Number(rawSeq);
+      if (!rawSeq || !Number.isSafeInteger(seq) || seq <= 0) {
+        json(res, 400, { error: "命令序号格式不正确" });
+        return true;
+      }
+      const item = commandHistory.find((command) => command.seq === seq);
+      if (!item) {
+        json(res, 404, { error: "命令不存在或结果已过期" });
+        return true;
+      }
+      json(res, 200, commandResult(item));
+      return true;
+    }
+
+    if (url.pathname === "/api/library" && req.method === "GET") {
+      json(res, 200, mediaLibrary.snapshot());
+      return true;
+    }
+
+    if (url.pathname === "/api/library" && req.method === "POST") {
+      try {
+        const body = await readJson(req);
+        const action = String(body.action || "");
+        if (action === "queue:add") return json(res, 200, mediaLibrary.addQueue(body.items));
+        if (action === "queue:remove") {
+          const id = String(body.id || "");
+          if ([...pendingQueuePlays.values()].includes(id)) return json(res, 409, { error: "正在播放的队列项目暂时不能删除" });
+          return json(res, 200, mediaLibrary.remove("queue", id));
+        }
+        if (action === "queue:move") return json(res, 200, mediaLibrary.moveQueue(String(body.id || ""), Number(body.direction)));
+        if (action === "bookmarks:add") return json(res, 200, mediaLibrary.addBookmark(body));
+        if (action === "bookmarks:remove") return json(res, 200, mediaLibrary.remove("bookmarks", String(body.id || "")));
+        if (action === "history:remove") return json(res, 200, mediaLibrary.remove("history", String(body.id || "")));
+        const playKinds = { "queue:play": "queue", "bookmarks:play": "bookmarks", "history:play": "history" };
+        const kind = playKinds[action];
+        if (kind) {
+          if (!extensionIsConnected()) return json(res, 409, { error: "扩展未连接" });
+          const id = String(body.id || ""), saved = mediaLibrary.find(kind, id);
+          if (!saved) return json(res, 404, { error: "项目不存在" });
+          if (kind === "queue" && [...pendingQueuePlays.values()].includes(id)) {
+            return json(res, 409, { error: "这个队列项目正在等待播放结果" });
+          }
+          const command = normalizeCommand({ type: "openUrl", value: saved.url, startTime: kind === "queue" ? undefined : saved.time });
+          if (!command) return json(res, 400, { error: "保存的链接或时间无效" });
+          const item = enqueue(command);
+          if (kind === "queue") pendingQueuePlays.set(item.seq, id);
+          return json(res, 202, { ok: true, seq: item.seq, bootId });
+        }
+        json(res, 400, { error: "不支持的媒体库操作" });
+      } catch (error) {
+        json(res, 400, { error: error.message || "媒体库操作失败" });
+      }
       return true;
     }
 
@@ -444,8 +690,15 @@ export async function startServer({
           json(res, 400, { error: "不支持的遥控指令" });
           return true;
         }
+        if (command.type === "closeTab" && Object.hasOwn(command, "value")) {
+          const catalogIsFresh = latestCatalog && Date.now() - latestCatalog.updatedAt < catalogTimeoutMs;
+          if (!catalogIsFresh || latestCatalog.supportsCloseTabById !== true) {
+            json(res, 409, { error: "请重新加载浏览器扩展以使用逐项关闭" });
+            return true;
+          }
+        }
         const item = enqueue(command);
-        json(res, 202, { ok: true, seq: item.seq });
+        json(res, 202, { ok: true, seq: item.seq, bootId });
       } catch {
         json(res, 400, { error: "无法读取遥控指令" });
       }
@@ -461,7 +714,13 @@ export async function startServer({
       json(res, 405, { error: "请求方式不支持" });
       return;
     }
-    const relative = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
+    let relative;
+    try {
+      relative = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1));
+    } catch {
+      json(res, 400, { error: "请求地址格式不正确" });
+      return;
+    }
     const filePath = resolve(PUBLIC_ROOT, normalize(relative));
     if (!filePath.startsWith(resolve(PUBLIC_ROOT) + sep)) {
       json(res, 403, { error: "禁止访问" });
@@ -483,8 +742,14 @@ export async function startServer({
   }
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     try {
+      let url;
+      try {
+        url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      } catch {
+        json(res, 400, { error: "请求地址格式不正确" });
+        return;
+      }
       if (url.pathname.startsWith("/api/")) {
         await api(req, res, url);
       } else {
@@ -502,6 +767,9 @@ export async function startServer({
     server.listen(port, host, resolveListen);
   });
   log("信息", "服务", `正在监听 ${host}:${server.address().port}，版本 ${VERSION}`);
+  server.on("close", () => {
+    try { mediaLibrary.flush(); } catch (error) { log("错误", "媒体库", `关闭时保存失败：${error.message}`); }
+  });
 
   return {
     bootId,

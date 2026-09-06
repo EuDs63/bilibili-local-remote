@@ -43,10 +43,24 @@
 
         <section class="transport" aria-label="播放控制">
           <button id="previous-action" class="round secondary" data-command="seekBy" data-value="-60" aria-label="快退一分钟"><span>−1 min</span></button>
-          <button class="round secondary" data-command="seekBy" data-value="-10" aria-label="快退十秒"><strong>−10</strong><span>秒</span></button>
+          <button id="seek-back" class="round secondary" data-command="seekBy" data-value="-10" data-hold-seek="-1" aria-label="快退"><strong>−10</strong><span>秒</span></button>
           <button id="play-toggle" class="round play" data-command="toggle" aria-label="播放或暂停"><span id="play-icon">▶</span></button>
-          <button class="round secondary" data-command="seekBy" data-value="10" aria-label="快进十秒"><strong>+10</strong><span>秒</span></button>
+          <button id="seek-forward" class="round secondary" data-command="seekBy" data-value="10" data-hold-seek="1" aria-label="快进"><strong>+10</strong><span>秒</span></button>
           <button id="next-action" class="round secondary" data-command="seekBy" data-value="60" aria-label="快进一分钟"><span>+1 min</span></button>
+        </section>
+
+        <details id="tabs-panel" class="panel feature-panel" open>
+          <summary>浏览器标签页</summary>
+          <p class="muted tab-help">普通页面的“切换”只聚焦浏览器标签，不改变当前视频遥控目标或锁定。</p>
+          <p id="tabs-status" class="tab-status">全部标签页与分组</p>
+          <div id="tabs-list" class="item-list"><p class="muted">正在等待扩展同步标签页列表</p></div>
+        </details>
+
+        <section class="panel compact-settings">
+          <label>跳转步长
+            <select id="seek-step"><option>5</option><option selected>10</option><option>15</option><option>30</option><option>60</option></select>
+          </label>
+          <label><input id="large-mode" type="checkbox" /> 大按钮模式</label>
         </section>
 
         <section class="panel volume-panel">
@@ -68,9 +82,9 @@
         </section>
 
         <section class="utility-grid" aria-label="播放器功能">
-          <button data-command="toggleDanmaku" data-capability="danmaku"><span class="utility-icon">弹</span><span>开关弹幕</span></button>
-          <button data-command="webFullscreen" data-capability="fullscreen"><span class="utility-icon">全</span><span>播放器全屏</span></button>
-          <button class="close-tab" data-command="closeTab"><span class="utility-icon">关</span><span>关闭页面</span></button>
+          <button data-command="toggleDanmaku" data-capability="danmaku"><span class="utility-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v10H8l-4 3V6Z"/><path d="M8 10h2m3 0h3"/></svg></span><span>开关弹幕</span></button>
+          <button data-command="webFullscreen" data-capability="fullscreen"><span class="utility-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></svg></span><span>播放器全屏</span></button>
+          <button id="current-tab-close" class="close-tab" data-command="closeTab" disabled><span class="utility-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg></span><span>关闭当前视频页</span></button>
         </section>
 
         <section class="open-video panel">
@@ -81,6 +95,32 @@
           </form>
         </section>
 
+        <details id="episodes-panel" class="panel feature-panel">
+          <summary>分集</summary>
+          <div id="episodes-list" class="item-list"><p class="muted">当前页面未提供分集</p></div>
+        </details>
+
+        <details id="queue-panel" class="panel feature-panel">
+          <summary>播放队列</summary>
+          <form id="queue-form" class="stack-form">
+            <label for="queue-links">批量视频链接</label>
+            <textarea id="queue-links" rows="3" placeholder="粘贴多个链接，每行一个"></textarea>
+            <button type="submit">加入队列</button>
+          </form>
+          <div id="queue-list" class="item-list"></div>
+        </details>
+
+        <details id="library-panel" class="panel feature-panel">
+          <summary>时间书签与最近播放</summary>
+          <form id="bookmark-form" class="stack-form">
+            <label for="bookmark-note">书签备注</label>
+            <input id="bookmark-note" type="text" placeholder="书签备注（可选）" />
+            <button type="submit">保存当前时间点</button>
+          </form>
+          <h3>书签</h3><div id="bookmarks-list" class="item-list"></div>
+          <h3>最近播放</h3><div id="history-list" class="item-list"></div>
+        </details>
+
         <footer>
           <p id="hint">电脑需保持本地服务和视频页面开启</p>
           <button id="forget" class="text-button" type="button">忘记这台电脑</button>
@@ -88,6 +128,7 @@
       </section>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/features.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>
