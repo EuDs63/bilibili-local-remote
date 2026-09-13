@@ -5,6 +5,7 @@ import { networkInterfaces } from "node:os";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createLibrary } from "./library.mjs";
+import { startMdnsAdvertisement } from "./mdns.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_ROOT = join(ROOT, "public");
@@ -14,6 +15,10 @@ const MAX_CATALOG_BODY_BYTES = 4 * 1024 * 1024;
 const EXTENSION_TIMEOUT_MS = 45_000;
 const CATALOG_TIMEOUT_MS = 10_000;
 const VERSION = "0.3.6";
+const DISCOVERY_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Private-Network": "true",
+};
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -366,12 +371,23 @@ export async function startServer({
 
   async function api(req, res, url) {
     if (req.method === "OPTIONS") {
-      res.writeHead(204, {
-        "Access-Control-Allow-Headers": "Content-Type, X-Video-Remote-Token, X-Bili-Remote-Token",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Origin": "*",
-      });
+      const headers = url.pathname === "/api/discovery"
+        ? {
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            ...DISCOVERY_HEADERS,
+          }
+        : { Allow: "GET, POST, OPTIONS" };
+      res.writeHead(204, headers);
       res.end();
+      return true;
+    }
+
+    if (url.pathname === "/api/discovery" && req.method === "GET") {
+      json(res, 200, {
+        service: "web-video-local-remote",
+        version: VERSION,
+        port: server.address()?.port || port,
+      }, DISCOVERY_HEADERS);
       return true;
     }
 
@@ -785,14 +801,26 @@ const entry = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "
 if (entry === import.meta.url) {
   const running = await startServer();
   const addresses = lanAddresses();
-  const primaryUrl = addresses.length ? `http://${addresses[0]}:${running.port}/` : null;
+  const fallbackUrl = addresses.length ? `http://${addresses[0]}:${running.port}/` : null;
+  let discovery = null;
+  if (addresses.length) {
+    try {
+      discovery = await startMdnsAdvertisement({ port: running.port, addresses: [addresses[0]], version: VERSION });
+    } catch (error) {
+      console.warn(`\n  固定名称发布失败：${error.message}`);
+      console.warn("  仍可使用下面的局域网 IP 地址。");
+    }
+  }
+  const primaryUrl = discovery?.url || fallbackUrl;
   console.log("\n  网页视频床上遥控器已经启动");
   if (running.noPairing) {
     console.log("  模式：免配对（同一局域网内的设备均可控制）");
   } else {
     console.log(`  配对码：${running.pairingCode}`);
   }
-  console.log("\n  请在安卓手机浏览器打开以下地址之一：");
+  console.log("\n  请在安卓手机浏览器打开：");
+  if (discovery) console.log(`  ${discovery.url}（固定地址，推荐收藏）`);
+  console.log("\n  如果固定地址无法访问，也可以使用以下 IP 地址：");
   if (addresses.length === 0) console.log(`  http://电脑局域网IP:${running.port}`);
   for (const address of addresses) console.log(`  http://${address}:${running.port}/`);
   if (primaryUrl) {
@@ -812,4 +840,26 @@ if (entry === import.meta.url) {
   }
   console.log("\n  请保持这个窗口打开。按 Ctrl+C 可以停止。");
   console.log("  发送链接后，日志应依次显示：已入队 → 已发送到扩展 → 执行成功。\n");
+
+  let shuttingDown = false;
+  async function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await discovery?.stop();
+    } catch (error) {
+      console.error(`\n  停止固定名称广播时发生错误：${error.message}`);
+      process.exitCode = 1;
+    }
+    try {
+      await new Promise((resolveClose, rejectClose) => {
+        running.server.close((error) => error ? rejectClose(error) : resolveClose());
+      });
+    } catch (error) {
+      console.error(`\n  停止服务时发生错误：${error.message}`);
+      process.exitCode = 1;
+    }
+  }
+  process.once("SIGINT", () => { void shutdown(); });
+  process.once("SIGTERM", () => { void shutdown(); });
 }

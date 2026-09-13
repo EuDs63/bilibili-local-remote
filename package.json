@@ -8,12 +8,13 @@
     "start": "node server.mjs",
     "start:no-pairing": "node server.mjs --no-pairing",
     "test": "node --test",
-    "check": "node --check server.mjs && node --check library.mjs && node --check public/app.js && node --check public/features.js && node --check extension/background.js && node --check extension/content.js"
+    "check": "node --check server.mjs && node --check mdns.mjs && node --check library.mjs && node --check public/app.js && node --check public/features.js && node --check docs/app.js && node --check extension/background.js && node --check extension/content.js"
   },
   "engines": {
     "node": ">=18.17"
   },
   "dependencies": {
+    "@homebridge/ciao": "^1.3.12",
     "qrcode": "^1.5.4"
   }
 }

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#e7e9ec" />
+    <meta name="description" content="在家庭局域网中自动找到网页视频遥控器" />
+    <title>查找网页视频遥控器</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="finder-card" aria-labelledby="finder-title">
+        <div class="brand-mark" aria-hidden="true">▶</div>
+        <p class="eyebrow">局域网连接</p>
+        <h1 id="finder-title">正在寻找电脑</h1>
+        <p id="status" class="status" aria-live="polite">正在检查上次连接和家庭网段…</p>
+
+        <div class="radar" aria-hidden="true">
+          <span class="radar-ring radar-ring-one"></span>
+          <span class="radar-ring radar-ring-two"></span>
+          <span class="radar-core"></span>
+        </div>
+
+        <div class="progress-track" role="progressbar" aria-label="查找进度" aria-valuemin="0" aria-valuemax="254" aria-valuenow="0">
+          <span id="progress"></span>
+        </div>
+        <p id="progress-text" class="progress-text">准备扫描</p>
+
+        <form id="scan-form" class="scan-form">
+          <label for="network">电脑所在网段或完整 IP</label>
+          <div class="field-row">
+            <input id="network" name="network" value="192.168.1" inputmode="decimal" autocomplete="off" spellcheck="false" />
+            <button id="scan-button" type="submit">重新查找</button>
+          </div>
+          <p class="hint">通常只需前三段，例如 <code>192.168.1</code>；知道地址时也可填写完整 IP。</p>
+        </form>
+
+        <details id="help">
+          <summary>一直找不到？</summary>
+          <ul>
+            <li>确认电脑上的遥控服务已经启动。</li>
+            <li>确认手机和电脑连接同一个 Wi-Fi。</li>
+            <li>Chrome 询问本地网络权限时请选择允许。</li>
+            <li>Clash 中保持“绕过私有网络”开启。</li>
+          </ul>
+        </details>
+      </section>
+      <p class="privacy">只探测你当前局域网的 <code>17331</code> 端口，遥控数据不会经过互联网。</p>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

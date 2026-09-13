@@ -59,6 +59,35 @@ test("pair, authenticate, report state, and deliver a command", async (t) => {
   assert.equal(info.pairingRequired, true);
   assert.equal(info.version, "0.3.6");
 
+  const discoveryResponse = await fetch(`${origin}/api/discovery`, {
+    headers: { Origin: "https://euds63.github.io" },
+  });
+  assert.equal(discoveryResponse.status, 200);
+  assert.equal(discoveryResponse.headers.get("access-control-allow-origin"), "*");
+  assert.deepEqual(await discoveryResponse.json(), {
+    service: "web-video-local-remote",
+    version: "0.3.6",
+    port: running.port,
+  });
+
+  const discoveryPreflight = await fetch(`${origin}/api/discovery`, {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://euds63.github.io",
+      "Access-Control-Request-Method": "GET",
+      "Access-Control-Request-Private-Network": "true",
+    },
+  });
+  assert.equal(discoveryPreflight.status, 204);
+  assert.equal(discoveryPreflight.headers.get("access-control-allow-private-network"), "true");
+
+  const commandPreflight = await fetch(`${origin}/api/command`, {
+    method: "OPTIONS",
+    headers: { Origin: "https://example.com", "Access-Control-Request-Method": "POST" },
+  });
+  assert.equal(commandPreflight.status, 204);
+  assert.equal(commandPreflight.headers.get("access-control-allow-origin"), null);
+
   const badPair = await fetch(`${origin}/api/pair`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
