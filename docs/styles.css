@@ -33,6 +33,11 @@ button:focus-visible, input:focus-visible, summary:focus-visible {
   outline-offset: 3px;
 }
 
+a:focus-visible {
+  outline: 2px solid var(--accent-dark);
+  outline-offset: 4px;
+}
+
 .shell {
   display: grid;
   align-content: center;
@@ -197,7 +202,28 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 details { margin-top: 22px; color: var(--muted); font-size: 0.9rem; }
 summary { width: fit-content; cursor: pointer; font-weight: 700; }
 ul { margin: 12px 0 0; padding-left: 20px; line-height: 1.65; }
-.privacy { margin: 16px 14px 0; text-align: center; }
+.page-footer {
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.privacy { margin: 0 14px; text-align: center; }
+
+.repository-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-underline-offset: 3px;
+}
+
+.repository-link:hover { color: var(--accent-dark); }
 
 @media (max-width: 410px) {
   .finder-card { padding-inline: 22px; }
